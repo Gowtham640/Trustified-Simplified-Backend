@@ -1,0 +1,6 @@
+google-api-python-client
+google-genai  # Changed from google-generativeai
+supabase
+python-dotenv
+requests
+websockets  # Add this
