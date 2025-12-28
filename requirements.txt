@@ -4,3 +4,4 @@ supabase
 python-dotenv
 requests
 websockets  # Add this
+youtube-transcript-api

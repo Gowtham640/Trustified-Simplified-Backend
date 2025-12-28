@@ -108,9 +108,89 @@ def process_pending_video():
         except:
             pass
 
+def get_youtube_transcript(video_url):
+    """
+    Get transcript/captions using youtube-transcript-api
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+
+        # Extract video ID from URL
+        video_id = video_url.split('v=')[1].split('&')[0]
+        print(f"Extracting transcript for video ID: {video_id}")
+        print(f"YouTubeTranscriptApi available methods: {dir(YouTubeTranscriptApi)}")
+
+        # Get transcript using youtube-transcript-api
+        try:
+            # Check what the API actually provides
+            yt_api = YouTubeTranscriptApi()
+            print(f"API methods: {dir(yt_api)}")
+
+            # Try the list method first
+            available = yt_api.list(video_id)
+            print(f"Available transcripts: {available}")
+
+            if available:
+                # Get ANY available transcript (not just English)
+                try:
+                    # Try English first
+                    transcript_obj = yt_api.fetch(video_id, languages=['en'])
+                    transcript_language = "English"
+                    print("Found English transcript")
+                except:
+                    # Fall back to any available language - try common language codes
+                    try:
+                        # Try Hindi specifically since we saw it in the list
+                        transcript_obj = yt_api.fetch(video_id, languages=['hi'])
+                        transcript_language = "Hindi"
+                        print("Found Hindi transcript")
+                    except:
+                        try:
+                            # Try without language filter to get any available
+                            transcript_obj = yt_api.fetch(video_id)
+                            transcript_language = "Unknown/Other"
+                            print(f"Found transcript in unknown language")
+                        except Exception as fallback_error:
+                            print(f"All transcript attempts failed: {fallback_error}")
+                            return None, None
+                print(f"Transcript object type: {type(transcript_obj)}")
+            else:
+                print("No transcripts listed")
+                return None, None
+
+        except Exception as api_error:
+            print(f"YouTube Transcript API error: {api_error}")
+            print(f"Error type: {type(api_error).__name__}")
+            print("No transcripts available for this video")
+            return None, None
+
+        # Extract text from the transcript object
+        # FetchedTranscriptSnippet should have a 'text' attribute or be iterable
+        try:
+            if hasattr(transcript_obj, 'text'):
+                transcript_text = transcript_obj.text
+            elif hasattr(transcript_obj, '__iter__'):
+                # If it's iterable, join the text fields
+                transcript_text = ' '.join([getattr(segment, 'text', str(segment)) for segment in transcript_obj])
+            else:
+                transcript_text = str(transcript_obj)
+            print(f"Extracted text length: {len(transcript_text)}")
+        except Exception as extract_error:
+            print(f"Error extracting text from transcript: {extract_error}")
+            return None
+
+        print(f"Successfully extracted transcript ({len(transcript_text)} characters)")
+        return transcript_text.strip(), transcript_language
+
+    except Exception as e:
+        print(f"Error getting transcript: {e}")
+        print(f"Error type: {type(e).__name__}")
+        print("Falling back to web search for video analysis")
+        return None, None
+
 def generate_report_with_gemini(video_url):
     """
-    Send video URL to Gemini and get report in JSON format
+    Send video URL and transcript to Gemini and get report in JSON format
     """
     try:
         print(f"Initializing Gemini client for video: {video_url}")
@@ -127,22 +207,50 @@ def generate_report_with_gemini(video_url):
             print(f"Failed to list models: {list_error}")
         
         # ============================================================
+        # Get video transcript first
+        # ============================================================
+        print("Getting video transcript...")
+        transcript_result = get_youtube_transcript(video_url)
+
+        # ============================================================
         # TODO: REPLACE THIS PROMPT WITH YOUR ACTUAL PROMPT
         # ============================================================
-        prompt = """
-        Task: Analyze the YouTube video at: [[INSERT_URL_HERE]] and generate a laboratory analysis report.
+        transcript_info = ""
+
+        if transcript_result and transcript_result[0]:
+            transcript_text, transcript_language = transcript_result
+            transcript_available = True
+
+            transcript_info = f"""
+            VIDEO TRANSCRIPT (Language: {transcript_language}):
+            {transcript_text}
+
+            IMPORTANT: Analyze this transcript content regardless of the language it is in.
+            Identify what supplement product is being tested/reviewed and generate the evaluation report in English.
+            Focus on the actual content to determine the product being evaluated - do NOT rely on video title or external metadata.
+            """
+        else:
+            transcript_available = False
+            transcript_info = """
+            NOTE: No transcript available for this video. You will need to use web search to find information about this video's content.
+            """
+
+        prompt = f"""
+        Task: Analyze the YouTube video at: {video_url} and generate a laboratory analysis report.
+
+        {transcript_info}
 
 Output Format: You MUST return a valid JSON (or a list of JSON objects if multiple products are found). The schema MUST follow this exact key order and structure:
 
 product_id: (COMPANY + NAME + FLAVOR) in ALL CAPS, no spaces.
 
-product_info: {product_name, product_category, serving_size, verdict}
+product_info: {{product_name, product_category, serving_size, verdict}}
 
-basic_tests: {result, ...sub-tests}
+basic_tests: {{result, ...sub-tests}}
 
-contaminant_tests: {result, ...sub-tests}
+contaminant_tests: {{result, ...sub-tests}}
 
-review: {result, ...details}
+review: {{result, ...details}}
 
 Strict Logic Rules:
 
@@ -154,35 +262,50 @@ No Ranges: Use single values only. If a range is given, provide the average.
 
 Sub-test Structure: Every nutrient/test (protein, carbs, etc.) MUST contain three keys: "result" (Pass/Fail), "claimed", and "tested".
 
-Ordering: The JSON keys MUST appear in the exact order: product_id -> product_info -> basic_tests -> contaminant_tests -> review.
-{
+Ordering: The JSON keys MUST appear in the exact order: debug_info -> product_id -> product_info -> basic_tests -> contaminant_tests -> review.
+{{
+  "debug_info": {{
+    "can_access_url": false,
+    "transcript_available": true,
+    "url_access_method": "transcript_analysis",
+    "video_info_found": {{
+      "title": "Video title from search",
+      "description": "Video description from search",
+      "transcript_length": 1500
+    }},
+    "product_identification_method": "transcript_content",
+    "confidence_level": "high",
+    "reasoning": "Product identified from actual video transcript content describing lab testing"
+  }},
   "product_id": "BRANDNAMEPRODUCTNAMEFLAVOR",
-  "product_info": {
+  "product_info": {{
     "product_name": "Example Protein",
     "product_category": "Whey Concentrate",
     "serving_size": "1 Scoop (30g)",
     "verdict": "Pass"
-  },
-  "basic_tests": {
+  }},
+  "basic_tests": {{
     "result": "Pass",
-    "protein": { "result": "Pass", "claimed": "24g", "tested": "24.5g" }
-  },
-  "contaminant_tests": {
+    "protein": {{ "result": "Pass", "claimed": "24g", "tested": "24.5g" }}
+  }},
+  "contaminant_tests": {{
     "result": "Pass",
-    "heavy_metals": { "result": "Pass", "status": "Below LOQ" }
-  },
-  "review": {
+    "heavy_metals": {{ "result": "Pass", "status": "Below LOQ" }}
+  }},
+  "review": {{
     "result": "Pass",
-    "taste": { "result": "Pass", "description": "Good" }
-  }
-}
+    "taste": {{ "result": "Pass", "description": "Good" }}
+  }}
+}}
 
         """
         # ============================================================
         
         # Create the complete prompt with URL
         full_prompt = f"""
-        You are a JSON generator for laboratory analysis reports. Always output valid JSON only, no conversational text or markdown.
+        You are a JSON generator for supplement product evaluation reports. Always output valid JSON only, no conversational text or markdown.
+
+        IMPORTANT DISCLAIMER: This is for informational and educational purposes only. Not medical advice, nutritional guidance, or professional testing results.
 
         CRITICAL ORDERING REQUIREMENT: You MUST output the JSON keys in this EXACT order:
         1. debug_info (first)
@@ -208,13 +331,15 @@ Ordering: The JSON keys MUST appear in the exact order: product_id -> product_in
         DEBUGGING REQUIREMENTS:
         Include a "debug_info" object as the FIRST field that contains:
         - can_access_url: true/false - whether you can actually access the video content
-        - url_access_method: "web_search"/"direct_video_access"/"metadata_only"/"none"
+        - transcript_available: true/false - whether a video transcript was successfully extracted
+        - transcript_language: "English"/"Non-English"/null - language of the extracted transcript
+        - url_access_method: "transcript_analysis"/"web_search"/"direct_video_access"/"metadata_only"/"none"
         - video_info_found: object with title, description, and any other metadata you can access
-        - product_identification_method: "video_content_analysis"/"metadata_inference"/"web_search_results"/"assumption"
+        - product_identification_method: "transcript_content"/"video_content_analysis"/"metadata_inference"/"web_search_results"/"assumption"
         - confidence_level: "high"/"medium"/"low"/"none" - how confident you are in the product identification
         - reasoning: detailed explanation of how you determined the product
 
-        Task: Analyze the YouTube video at: {video_url} and generate a laboratory analysis report.
+        Task: Review the YouTube video at: {video_url} and create a supplement product evaluation report based on the content shown.
 
         Output Format: You MUST return a valid JSON with the schema following this exact key order and structure:
 
@@ -243,14 +368,16 @@ Ordering: The JSON keys MUST appear in the exact order: product_id -> product_in
         {{
           "debug_info": {{
             "can_access_url": false,
-            "url_access_method": "web_search",
+            "transcript_available": true,
+            "url_access_method": "transcript_analysis",
             "video_info_found": {{
               "title": "Video title from search",
-              "description": "Video description from search"
+              "description": "Video description from search",
+              "transcript_length": 1500
             }},
-            "product_identification_method": "metadata_inference",
-            "confidence_level": "low",
-            "reasoning": "Cannot access actual video content, inferred from title/description only"
+            "product_identification_method": "transcript_content",
+            "confidence_level": "high",
+            "reasoning": "Product identified from actual video transcript content describing lab testing"
           }},
           "product_id": "BRANDNAMEPRODUCTNAMEFLAVOR",
           "product_info": {{
@@ -277,24 +404,38 @@ Ordering: The JSON keys MUST appear in the exact order: product_id -> product_in
         from google.genai import types
 
         # 1. Define the config using the proper class
-        gemini_config = types.GenerateContentConfig(
-            temperature=0.1,
-            tools=[
-                types.Tool(
-                    google_search=types.GoogleSearch()
-                )
-            ]
-        )
+        # Only use tools if we don't have a transcript
+        if transcript_available:
+            gemini_config = types.GenerateContentConfig(
+                temperature=0.7
+                # No tools needed when we have transcript content
+            )
+        else:
+            gemini_config = types.GenerateContentConfig(
+                temperature=0.7,
+                tools=[
+                    types.Tool(
+                        google_search=types.GoogleSearch()
+                    )
+                ]
+            )
 
         # 2. Call the model
         print("Sending request to Gemini API...")
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-2.5-flash-lite',
                 contents=full_prompt,
                 config=gemini_config
             )
             print("Gemini API call successful")
+
+            # Check if response contains tool calls
+            if hasattr(response, 'function_calls') and response.function_calls:
+                print(f"Response contains {len(response.function_calls)} tool call(s)")
+                for i, call in enumerate(response.function_calls):
+                    print(f"Tool call {i+1}: {call.name} with args: {call.args}")
+
         except Exception as api_error:
             print(f"Gemini API call failed: {api_error}")
             print(f"API Error type: {type(api_error).__name__}")
@@ -433,7 +574,7 @@ def fetch_product_image(report_json):
 def check_new_videos():
     """
     Part 2: Check for new videos on YouTube and add them to database
-    - Fetch latest videos from YouTube (filtering out shorts <= 60s)
+    - Fetch latest videos from YouTube (filtering out shorts <= 120s)
     - Fetch latest videos from database
     - Compare and add new long-form videos
     """
@@ -489,12 +630,12 @@ def check_new_videos():
                 duration_seconds = parse_duration_to_seconds(duration_iso)
                 video_durations[video_detail['id']] = duration_seconds
 
-            # Filter out shorts (videos <= 60 seconds)
+            # Filter out shorts (videos <= 120 seconds)
             for search_result in search_results:
                 video_id = search_result['video_id']
                 duration = video_durations.get(video_id, 0)
 
-                if duration > 60:
+                if duration > 120:
                     youtube_videos.append(search_result)
                 else:
                     print(f"Skipped short video: {search_result['video_url']} (duration: {duration}s)")

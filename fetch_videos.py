@@ -53,7 +53,7 @@ def get_channel_id(channel_handle):
 
 def fetch_all_videos(channel_id):
     """
-    Fetch all videos from the YouTube channel, filtering out shorts (<= 60 seconds)
+    Fetch all videos from the YouTube channel, filtering out shorts (<= 120 seconds)
     Returns list of video dictionaries with video_id, video_url, channel_id, and published_at
     """
     youtube = build('youtube', 'v3', developerKey=config.YOUTUBE_API_KEY)
@@ -103,12 +103,12 @@ def fetch_all_videos(channel_id):
                     duration_seconds = parse_duration_to_seconds(duration_iso)
                     video_durations[video_detail['id']] = duration_seconds
 
-                # Filter out shorts (videos <= 60 seconds) and add to results
+                # Filter out shorts (videos <= 120 seconds) and add to results
                 for search_result in search_results:
                     video_id = search_result['video_id']
                     duration = video_durations.get(video_id, 0)
 
-                    if duration > 60:
+                    if duration > 120:
                         videos.append(search_result)
                         print(f"Included video: {search_result['video_url']} (duration: {duration}s)")
                     else:
