@@ -49,6 +49,12 @@ def get_channel_id(channel_handle):
             return None
     except Exception as e:
         print(f"Error getting channel ID: {e}")
+        if "API key expired" in str(e):
+            print("YouTube API key has expired. Please renew it in Google Cloud Console.")
+        elif "badRequest" in str(e):
+            print("YouTube API request is malformed. Check API key and permissions.")
+        elif "quotaExceeded" in str(e):
+            print("YouTube API quota exceeded. Check usage limits.")
         return None
 
 def fetch_all_videos(channel_id):
@@ -103,12 +109,12 @@ def fetch_all_videos(channel_id):
                     duration_seconds = parse_duration_to_seconds(duration_iso)
                     video_durations[video_detail['id']] = duration_seconds
 
-                # Filter out shorts (videos <= 60 seconds) and add to results
+                # Filter out shorts (videos <= 160 seconds) and add to results
                 for search_result in search_results:
                     video_id = search_result['video_id']
                     duration = video_durations.get(video_id, 0)
 
-                    if duration > 60:
+                    if duration > 160:
                         videos.append(search_result)
                         print(f"Included video: {search_result['video_url']} (duration: {duration}s)")
                     else:

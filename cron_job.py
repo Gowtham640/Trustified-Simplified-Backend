@@ -5,6 +5,67 @@ from datetime import datetime, timezone
 import config
 import time
 import requests
+import os
+import time
+
+def retry_supabase_operation(operation_func, max_retries=3, delay=2):
+    """
+    Retry Supabase operations with exponential backoff for network issues
+    """
+    for attempt in range(max_retries):
+        try:
+            return operation_func()
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = delay * (2 ** attempt)  # Exponential backoff
+                print(f"Supabase operation failed (attempt {attempt + 1}/{max_retries}): {e}")
+                print(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                print(f"Supabase operation failed after {max_retries} attempts: {e}")
+                raise e
+
+def get_gemini_usage_count():
+    """Get current Gemini API usage count for today"""
+    try:
+        # Create usage file path
+        usage_file = 'gemini_usage.txt'
+
+        # Check if file exists and is from today
+        if os.path.exists(usage_file):
+            with open(usage_file, 'r') as f:
+                lines = f.readlines()
+                if len(lines) >= 2:
+                    date_str = lines[0].strip()
+                    count_str = lines[1].strip()
+
+                    # Check if it's today's date
+                    today = datetime.now().strftime('%Y-%m-%d')
+                    if date_str == today:
+                        return int(count_str)
+
+        # If file doesn't exist or is not from today, reset to 0
+        return 0
+    except Exception as e:
+        print(f"Error reading usage count: {e}")
+        return 0
+
+def increment_gemini_usage_count():
+    """Increment and save Gemini API usage count"""
+    try:
+        usage_file = 'gemini_usage.txt'
+        today = datetime.now().strftime('%Y-%m-%d')
+        current_count = get_gemini_usage_count()
+        new_count = current_count + 1
+
+        # Write date and count
+        with open(usage_file, 'w') as f:
+            f.write(f"{today}\n{new_count}\n")
+
+        return new_count
+    except Exception as e:
+        print(f"Error updating usage count: {e}")
+        return 0
 
 def process_pending_video():
     """
@@ -31,11 +92,14 @@ def process_pending_video():
         print(f"Processing video: {video_url}")
         
         # Update status to 'updating'
-        config.supabase.table('videos').update({
-            'status': 'updating',
-            'last_attempt_at': datetime.now(timezone.utc).isoformat(),
-            'retry_count': video.get('retry_count', 0) + 1
-        }).eq('id', video_id).execute()
+        def update_video_status():
+            return config.supabase.table('videos').update({
+                'status': 'updating',
+                'last_attempt_at': datetime.now(timezone.utc).isoformat(),
+                'retry_count': video.get('retry_count', 0) + 1
+            }).eq('id', video_id).execute()
+
+        retry_supabase_operation(update_video_status)
         
         # Generate reports with Gemini (returns array of reports)
         print("Generating reports with Gemini...")
@@ -48,65 +112,119 @@ def process_pending_video():
 
         # Insert each report into reports table as separate rows
         for i, report_json in enumerate(reports_array):
-            # Create unique ID for each product report
-            product_id = report_json.get('product_id', f"{video_id}_{i}")
+                # Extract data from Gemini results for database fields
+                product_id_value = report_json.get('product_id', '')
+                product_info = report_json.get('product_info', {})
+                basic_tests = report_json.get('basic_tests', {})
 
-            print(f"Storing report {i+1}/{len(reports_array)}: {product_id}")
+                # Safely extract fields with proper defaults
+                company_name = product_info.get('company_name', '').strip()
+                if not company_name:
+                    company_name = 'Unknown Company'
 
-            try:
-                # Use video's database ID as foreign key (since reports.id references videos.id)
-                # For multiple products per video, we'll need to modify schema later
-                # For now, use video_id and overwrite with latest product
-                result = config.supabase.table('reports').insert({
-                    'id': video_id,  # Foreign key to videos table
-                    'video_url': video_url,
-                    'results': report_json,
-                    'image_status': 'pending'
-                }).execute()
+                product_name = product_info.get('product_name', '').strip()
+                product_category = product_info.get('product_category', '').strip()
 
-                inserted_report_id = video_id
+                # Determine overall verdict from individual test results
+                verdict_value = 'fail'  # Default to fail
+                if basic_tests:
+                    # Check if any test has a result field
+                    test_results = []
+                    for test_key, test_data in basic_tests.items():
+                        if isinstance(test_data, dict) and 'result' in test_data:
+                            result = test_data['result'].strip().lower()
+                            test_results.append(result)
 
-            except Exception as insert_error:
-                print(f"Error inserting report {i+1}: {insert_error}")
-                continue
+                    # If we have test results, determine overall verdict
+                    if test_results:
+                        # If all results are "passed", then overall verdict is "pass"
+                        if all(result == 'passed' for result in test_results):
+                            verdict_value = 'pass'
+                        else:
+                            verdict_value = 'fail'
+                    else:
+                        # Fallback: check for top-level verdict field
+                        verdict_value = basic_tests.get('verdict', 'fail').strip().lower()
 
-            # Fetch product image for this specific report
-            print(f"Fetching product image for {product_id}...")
-            image_url = fetch_product_image(report_json)
+                # Final validation against allowed values
+                allowed_verdicts = ['pass', 'fail', 'not assigned', 'pending']
+                if verdict_value not in allowed_verdicts:
+                    verdict_value = 'fail'  # Default fallback
 
-            # Update report with image
-            try:
-                if image_url:
-                    config.supabase.table('reports').update({
-                        'image_url': image_url,
-                        'image_status': 'completed'
-                    }).eq('id', inserted_report_id).execute()
-                    print(f"Image stored for {product_id}: {image_url}")
-                else:
-                    config.supabase.table('reports').update({
-                        'image_status': 'failed'
-                    }).eq('id', inserted_report_id).execute()
-                    print(f"Failed to fetch product image for {product_id}")
-            except Exception as update_error:
-                print(f"Error updating image status for {product_id}: {update_error}")
-        
+                # Create unique ID for each product report
+                # Generate unique report ID (video_id + product_index to ensure uniqueness)
+                report_id = f"{video_id}_{i}"
+
+                print(f"Storing report {i+1}/{len(reports_array)}: {product_id_value or report_id}")
+
+                try:
+                    # Insert report with all required fields per updated schema
+                    def insert_report():
+                        return config.supabase.table('reports').insert({
+                            'id': report_id,  # Unique report ID (video_id + index)
+                            'results': report_json,
+                            'image_status': 'pending',
+                            'video_url': video_url,
+                            'product_id': product_id_value,  # Text field (was bigint)
+                            'product_name': product_name,
+                            'product_category': product_category,
+                            'verdict': verdict_value,  # Now allows: pass, fail, not assigned, pending
+                            'company': company_name,
+                            'video_id': video_id  # Foreign key to videos table
+                        }).execute()
+
+                    result = retry_supabase_operation(insert_report)
+                    inserted_report_id = report_id
+
+                except Exception as insert_error:
+                    print(f"Error inserting report {i+1}: {insert_error}")
+                    continue
+
+                # Fetch product image for this specific report
+                print(f"Fetching product image for {product_id_value or product_name}...")
+                image_url = fetch_product_image(report_json)
+
+                # Update report with image
+                try:
+                    if image_url:
+                        def update_image_success():
+                            return config.supabase.table('reports').update({
+                                'image_url': image_url,
+                                'image_status': 'completed'
+                            }).eq('id', inserted_report_id).execute()
+                        retry_supabase_operation(update_image_success)
+                        print(f"Image stored for {product_id_value or product_name}: {image_url}")
+                    else:
+                        def update_image_failed():
+                            return config.supabase.table('reports').update({
+                                'image_status': 'failed'
+                            }).eq('id', inserted_report_id).execute()
+                        retry_supabase_operation(update_image_failed)
+                        print(f"Failed to fetch product image for {product_id_value or product_name}")
+                except Exception as update_error:
+                    print(f"Error updating image status for {product_id_value or product_name}: {update_error}")
+
         # Update video status to 'completed'
-        config.supabase.table('videos').update({
-            'status': 'completed'
-        }).eq('id', video_id).execute()
-        
+        def update_video_completed():
+            return config.supabase.table('videos').update({
+                'status': 'completed'
+            }).eq('id', video_id).execute()
+
+        retry_supabase_operation(update_video_completed)
         print(f"Successfully processed video: {video_url}")
-        
+
     except Exception as e:
         print(f"Error processing video: {e}")
         try:
             # Update video status to 'failed'
             if 'video_id' in locals():
-                config.supabase.table('videos').update({
-                    'status': 'failed'
-                }).eq('id', video_id).execute()
-        except:
-            pass
+                def update_video_failed():
+                    return config.supabase.table('videos').update({
+                        'status': 'failed'
+                    }).eq('id', video_id).execute()
+                retry_supabase_operation(update_video_failed)
+        except Exception as failure_error:
+            print(f"Failed to update video status to failed: {failure_error}")
 
 def generate_report_with_gemini(video_url):
     """
@@ -129,65 +247,51 @@ def generate_report_with_gemini(video_url):
 
         # Create the analysis prompt that forces video content analysis
         prompt = """
-### SYSTEM ROLE ###
-You are a Specialized JSON Generator for Laboratory Analysis. You must perform a visual and auditory analysis of the provided video content.
+        ### SYSTEM ROLE ###
+You are a specialized JSON generator for laboratory analysis. You must perform a visual analysis of the provided video content. If you cannot access the video directly to see specific lab equipment, technician gear, and product texture, you must set "can_access_url": false.
 
-### VISUAL VERIFICATION ###
-If you cannot visually identify lab equipment, technician gear, or product texture, set "can_access_url": false.
+### INSTRUCTIONS ###
+1. Count how many different products are tested in the video
+2. For each product, analyze: lab results, company info, and quality tests
+3. Number each product starting from "1", "2", etc.
 
-### STRICT JSON SCHEMA SPECIFICATION ###
-You must output ONLY valid JSON. All keys must follow this exact order and naming convention:
+### JSON STRUCTURE AND STRICT ORDERING ###
+You MUST output valid JSON. The keys MUST appear in this exact order:
+1. "debug_info"
+2. "product_id"
+3. "product_info"
+4. "basic_tests"
+5. "contaminant_tests"
+6. "review"
 
-1.debug_info:
-  can_access_url: (boolean)
-  visual_observations: (List lab equipment, technician gear colors, and product texture)
-
-2.product_id: [COMPANY][NAME][FLAVOR] (ALL CAPS, NO SPACES)
-
-3.product_info:
-  product_name: (string)
-  product_category: (Choose: Whey Concentrate, Whey Isolate, Whey Blend, Plant protein, Creatine, Food, Omega 3, Others)
-  serving_size: (string - weight + method, e.g., "33g Scoop", "1 Sachet (1g)", "2 Tablets")
-
-4.basic_tests:
-  verdict: (Pass/Fail)
-  notes: (Short, crisp explanation of accuracy)
-  [TEST_NAME]: (Create dynamic keys for every macro/active ingredient mentioned, e.g., "protein_percentage", "fat", "caffeine", "epa", "dha")
-    Each key must contain: {claimed: (string), tested: (string), verdict: (Pass/Fail)}
-  [CATEGORY_SPECIFIC_LOGIC]:
-    IF category is Whey (any) or Creatine: You MUST include a field named protein_per_serving or creatine_per_serving
-    Calculation Rule: If not stated in the video, calculate tested value as: (Lab % × Serving Size Weight) / 100
-
-5.contaminant_tests:
-  verdict: (Pass/Fail)
-  notes: (Short, crisp explanation of purity)
-  [TEST_NAME]: (e.g., "heavy_metals", "pesticides", "amino_spiking", "aflatoxins")
-    Each key must contain: {tested: (string), verdict: (Pass/Fail)}
-
-review:
-  notes: (Short, crisp summary of subjective experience)
-  [TEST_NAME]: (e.g., "taste", "mixability", "packaging")
-    Each key must contain: {tested: (string), result: (Pass/Fail)}
-
-### STRICT DATA CONSTRAINTS ###
-Uniformity: Every sub-test object must have a result field.
-No Ranges: Use single average values only.
-Claimed Field: Use claimed ONLY in basic_tests. Do not include it in contaminant_tests or review.
-NULL Values: Use null for missing data. Never use "N/A".
-Visual identification: If "tested" for a review item (like texture) is based on visual sight, describe it (e.g., "Fine white powder").
+### DATA RULES ###
+- Product ID: [COMPANY][NAME][FLAVOR] (ALL CAPS, NO SPACES).
+- Categories: Whey Concentrate, Whey Isolate, Whey Blend, Plant protein, Creatine, Food, Omega 3, Others.
+- No ranges: Provide single average values.
+- Sub-tests: Must include "verdict", "claimed", and "tested".
+- CRUCIAL FIELDS: Always include "company_name", "product_name", "product_category", "verdict" , "price" , "price_per_serving", "serving_size" in product_info.
+- PROTEIN/CREATINE: If product is whey/creatine, include "protein_per_serving"/"creatine_per_serving" in basic_tests.
+- Note: Only tests must include a note explaining the result of the test and not sub tests.
+- Verdict: Every test and subtest must have a "verdict" field(pass/fail/NULL).
+- NULL: If any field doesnt have the information then mark it "NULL".
+- Claimed: Only basic_tests subtests must have claimed field. Contaminant and review tests must not have claimed field.
+- Review: Must include "taste","mixability","packaging","serving_size_accuracy". 
 
 ### INPUT VIDEO ###
 """ + video_url + """
 
 ### OUTPUT TEMPLATE (STRICT ADHERENCE REQUIRED) ###
-{
+{"1": {
   "debug_info": { ... },
   "product_id": "...",
   "product_info": { ... },
   "basic_tests": { ... },
   "contaminant_tests": { ... },
   "review": { ... }
+},
+"2": {...}
 }
+
         """
 
         from google.genai import types
@@ -212,6 +316,19 @@ Visual identification: If "tested" for a review item (like texture) is based on 
 
         # 3. Call the model with Part object and prompt
         print("Sending request to Gemini API with video Part...")
+
+        # Track Gemini usage
+        usage_count = increment_gemini_usage_count()
+        emoji = "🤖"
+        if usage_count >= 18:
+            emoji = "⚠️"
+        elif usage_count >= 15:
+            emoji = "🟡"
+        print(f"{emoji} GEMINI API CALL #{usage_count}/20 {emoji}")
+
+        if usage_count >= 20:
+            print("⚠️ WARNING: You have reached your Gemini API quota limit! ⚠️")
+
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
@@ -270,37 +387,111 @@ Visual identification: If "tested" for a review item (like texture) is based on 
 
         response_text = response_text.strip()
 
-        # Try to parse as JSON array first (multiple products)
+        # Parse JSON response - handle both single and multiple products
         try:
             print("Attempting to parse JSON response...")
-            reports_array = json.loads(response_text)
-            print(f"Successfully parsed JSON. Type: {type(reports_array)}")
 
-            # Debug: Print the actual response structure
-            if isinstance(reports_array, dict):
-                print("DEBUG: Single report keys:", list(reports_array.keys()))
-                if 'debug_info' in reports_array:
-                    print("DEBUG: debug_info found:", reports_array['debug_info'])
-                else:
-                    print("DEBUG: No debug_info field found in response")
-                print("DEBUG: product_id:", reports_array.get('product_id', 'NOT FOUND'))
-            elif isinstance(reports_array, list) and len(reports_array) > 0:
-                print("DEBUG: First report keys:", list(reports_array[0].keys()))
-                if 'debug_info' in reports_array[0]:
-                    print("DEBUG: debug_info found:", reports_array[0]['debug_info'])
-                else:
-                    print("DEBUG: No debug_info field found in response")
+            # First try to parse the entire response as one JSON object/array
+            try:
+                reports_array = json.loads(response_text)
+                print(f"Successfully parsed JSON. Type: {type(reports_array)}")
 
-            # If it's a single object, convert to array for consistency
-            if isinstance(reports_array, dict):
-                print("Returning single report as array")
-                return [reports_array]
-            # If it's already an array, return as is
-            elif isinstance(reports_array, list):
-                print(f"Returning {len(reports_array)} reports")
-                return reports_array
-        except json.JSONDecodeError as json_error:
-            print(f"Failed to parse JSON response: {json_error}")
+                # Debug: Print the actual response structure
+                if isinstance(reports_array, dict):
+                    print("DEBUG: Single report keys:", list(reports_array.keys()))
+                    if 'debug_info' in reports_array:
+                        print("DEBUG: debug_info found:", reports_array['debug_info'])
+                    else:
+                        print("DEBUG: No debug_info field found in response")
+                    print("DEBUG: product_id:", reports_array.get('product_id', 'NOT FOUND'))
+                elif isinstance(reports_array, list) and len(reports_array) > 0:
+                    print("DEBUG: First report keys:", list(reports_array[0].keys()))
+                    if 'debug_info' in reports_array[0]:
+                        print("DEBUG: debug_info found:", reports_array[0]['debug_info'])
+                    else:
+                        print("DEBUG: No debug_info field found in response")
+
+                # If it's a single object, check if it contains numbered products
+                if isinstance(reports_array, dict):
+                    # Check if it has numbered product keys like "1", "2", "3"
+                    product_keys = [k for k in reports_array.keys() if k.isdigit()]
+                    if product_keys:
+                        # New structure: numbered product keys at top level
+                        products_array = []
+                        for key in sorted(product_keys, key=int):  # Sort numerically
+                            products_array.append(reports_array[key])
+                        print(f"Extracted {len(products_array)} products from numbered keys: {product_keys}")
+                        return products_array
+                    elif 'products' in reports_array and isinstance(reports_array['products'], dict):
+                        # Alternative structure: products object with numbered keys
+                        products_obj = reports_array['products']
+                        products_array = []
+                        for key in sorted(products_obj.keys()):  # Sort by key to maintain order
+                            products_array.append(products_obj[key])
+                        print(f"Extracted {len(products_array)} products from products object")
+                        return products_array
+                    else:
+                        # Old single product structure
+                        print("Returning single report as array")
+                        return [reports_array]
+                # If it's already an array, return as is
+                elif isinstance(reports_array, list):
+                    print(f"Returning {len(reports_array)} reports")
+                    return reports_array
+
+            except json.JSONDecodeError as single_parse_error:
+                # If single parse fails, try to split and parse multiple JSON objects
+                print(f"Single JSON parse failed: {single_parse_error}")
+                print("Attempting to parse as multiple JSON objects...")
+
+                # Split response into individual JSON objects
+                # Look for pattern: } followed by { (end of one object, start of next)
+                json_objects = []
+                current_pos = 0
+
+                while current_pos < len(response_text):
+                    # Find the start of a JSON object
+                    start_pos = response_text.find('{', current_pos)
+                    if start_pos == -1:
+                        break
+
+                    # Find the matching closing brace
+                    brace_count = 0
+                    end_pos = start_pos
+                    for i in range(start_pos, len(response_text)):
+                        if response_text[i] == '{':
+                            brace_count += 1
+                        elif response_text[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_pos = i + 1
+                                break
+
+                    if brace_count != 0:
+                        break  # Malformed JSON
+
+                    # Extract and parse this JSON object
+                    json_str = response_text[start_pos:end_pos].strip()
+                    if json_str:
+                        try:
+                            parsed_obj = json.loads(json_str)
+                            json_objects.append(parsed_obj)
+                            print(f"Successfully parsed JSON object {len(json_objects)}")
+                        except json.JSONDecodeError as obj_error:
+                            print(f"Failed to parse JSON object at position {start_pos}: {obj_error}")
+                            break
+
+                    current_pos = end_pos
+
+                if json_objects:
+                    print(f"Successfully parsed {len(json_objects)} JSON objects")
+                    return json_objects
+                else:
+                    print("Failed to parse any valid JSON objects")
+                    return None
+
+        except Exception as e:
+            print(f"Unexpected error during JSON parsing: {e}")
             print(f"Response text (first 500 chars): {response_text[:500]}...")
             return None
 
@@ -338,6 +529,18 @@ def fetch_product_image(report_json):
         }
         
         response = requests.get(url, params=params)
+        print(f"Custom Search API response status: {response.status_code}")
+
+        if response.status_code == 400:
+            print(f"Bad Request details: {response.text}")
+            print("This usually means invalid API key or search engine ID")
+            print("SOLUTION: Go to Google Cloud Console and check/renew your API keys")
+            return None
+        elif response.status_code == 403:
+            print(f"Forbidden - likely API key expired or quota exceeded: {response.text}")
+            print("SOLUTION: Check API key validity and billing status in Google Cloud Console")
+            return None
+
         response.raise_for_status()
         
         data = response.json()
@@ -413,12 +616,12 @@ def check_new_videos():
                 duration_seconds = parse_duration_to_seconds(duration_iso)
                 video_durations[video_detail['id']] = duration_seconds
 
-            # Filter out shorts (videos <= 60 seconds)
+            # Filter out shorts (videos <= 160 seconds)
             for search_result in search_results:
                 video_id = search_result['video_id']
                 duration = video_durations.get(video_id, 0)
 
-                if duration > 60:
+                if duration > 160:
                     youtube_videos.append(search_result)
                 else:
                     print(f"Skipped short video: {search_result['video_url']} (duration: {duration}s)")
@@ -441,13 +644,15 @@ def check_new_videos():
             print(f"Found {len(new_videos)} new video(s)")
             for video in new_videos:
                 try:
-                    config.supabase.table('videos').insert({
-                        'video_id': video['video_id'],
-                        'video_url': video['video_url'],
-                        'channel_id': video['channel_id'],
-                        'published_at': video['published_at'],
-                        'status': 'pending'
-                    }).execute()
+                    def insert_video():
+                        return config.supabase.table('videos').insert({
+                            'video_id': video['video_id'],
+                            'video_url': video['video_url'],
+                            'channel_id': video['channel_id'],
+                            'published_at': video['published_at'],
+                            'status': 'pending'
+                        }).execute()
+                    retry_supabase_operation(insert_video)
                     print(f"Added new video: {video['video_url']}")
                 except Exception as e:
                     print(f"Error adding video {video['video_url']}: {e}")
@@ -467,7 +672,16 @@ def main():
     print(f"\n{'='*50}")
     print(f"CRON JOB STARTED - {datetime.now()}")
     print(f"{'='*50}")
-    
+
+    # Display current Gemini usage
+    current_usage = get_gemini_usage_count()
+    emoji = "🤖"
+    if current_usage >= 18:
+        emoji = "⚠️"
+    elif current_usage >= 15:
+        emoji = "🟡"
+    print(f"{emoji} CURRENT GEMINI USAGE: {current_usage}/20 {emoji}")
+
     # Part 1: Process pending videos
     process_pending_video()
     

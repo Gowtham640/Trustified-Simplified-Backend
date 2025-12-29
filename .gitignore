@@ -1,6 +1,9 @@
 # Environment variables
 .env
-
+config.py
+gemini_usage.txt
+test_apis.py
+test_parsing.py
 # Python
 __pycache__/
 *.py[cod]
