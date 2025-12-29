@@ -111,6 +111,7 @@ def process_pending_video():
 def generate_report_with_gemini(video_url):
     """
     Send video URL to Gemini and get report in JSON format
+    Uses native YouTube URL support with FileData to make Gemini actually "see" the video
     """
     try:
         print(f"Initializing Gemini client for video: {video_url}")
@@ -125,158 +126,81 @@ def generate_report_with_gemini(video_url):
                 print(f"  - {model.name}")
         except Exception as list_error:
             print(f"Failed to list models: {list_error}")
-        
-        # ============================================================
-        # TODO: REPLACE THIS PROMPT WITH YOUR ACTUAL PROMPT
-        # ============================================================
+
+        # Create the analysis prompt that forces video content analysis
         prompt = """
-        Task: Analyze the YouTube video at: [[INSERT_URL_HERE]] and generate a laboratory analysis report.
+### SYSTEM ROLE ###
+You are a Specialized JSON Generator for Laboratory Analysis. You must perform a visual and auditory analysis of the provided video content.
 
-Output Format: You MUST return a valid JSON (or a list of JSON objects if multiple products are found). The schema MUST follow this exact key order and structure:
+### VISUAL VERIFICATION ###
+If you cannot visually identify lab equipment, technician gear, or product texture, set "can_access_url": false.
 
-product_id: (COMPANY + NAME + FLAVOR) in ALL CAPS, no spaces.
+### STRICT JSON SCHEMA SPECIFICATION ###
+You must output ONLY valid JSON. All keys must follow this exact order and naming convention:
 
-product_info: {product_name, product_category, serving_size, verdict}
+1.debug_info:
+  can_access_url: (boolean)
+  visual_observations: (List lab equipment, technician gear colors, and product texture)
 
-basic_tests: {result, ...sub-tests}
+2.product_id: [COMPANY][NAME][FLAVOR] (ALL CAPS, NO SPACES)
 
-contaminant_tests: {result, ...sub-tests}
+3.product_info:
+  product_name: (string)
+  product_category: (Choose: Whey Concentrate, Whey Isolate, Whey Blend, Plant protein, Creatine, Food, Omega 3, Others)
+  serving_size: (string - weight + method, e.g., "33g Scoop", "1 Sachet (1g)", "2 Tablets")
 
-review: {result, ...details}
+4.basic_tests:
+  verdict: (Pass/Fail)
+  notes: (Short, crisp explanation of accuracy)
+  [TEST_NAME]: (Create dynamic keys for every macro/active ingredient mentioned, e.g., "protein_percentage", "fat", "caffeine", "epa", "dha")
+    Each key must contain: {claimed: (string), tested: (string), verdict: (Pass/Fail)}
+  [CATEGORY_SPECIFIC_LOGIC]:
+    IF category is Whey (any) or Creatine: You MUST include a field named protein_per_serving or creatine_per_serving
+    Calculation Rule: If not stated in the video, calculate tested value as: (Lab % × Serving Size Weight) / 100
 
-Strict Logic Rules:
+5.contaminant_tests:
+  verdict: (Pass/Fail)
+  notes: (Short, crisp explanation of purity)
+  [TEST_NAME]: (e.g., "heavy_metals", "pesticides", "amino_spiking", "aflatoxins")
+    Each key must contain: {tested: (string), verdict: (Pass/Fail)}
 
-Categories: Only use: Whey Concentrate, Whey Isolate, Whey Blend, Plant protein, Creatine, Food, Omega 3, Others.
+review:
+  notes: (Short, crisp summary of subjective experience)
+  [TEST_NAME]: (e.g., "taste", "mixability", "packaging")
+    Each key must contain: {tested: (string), result: (Pass/Fail)}
 
-Calculation: If the video only provides percentages for Protein/Creatine, you MUST calculate the per_serving value based on the serving_size.
+### STRICT DATA CONSTRAINTS ###
+Uniformity: Every sub-test object must have a result field.
+No Ranges: Use single average values only.
+Claimed Field: Use claimed ONLY in basic_tests. Do not include it in contaminant_tests or review.
+NULL Values: Use null for missing data. Never use "N/A".
+Visual identification: If "tested" for a review item (like texture) is based on visual sight, describe it (e.g., "Fine white powder").
 
-No Ranges: Use single values only. If a range is given, provide the average.
+### INPUT VIDEO ###
+""" + video_url + """
 
-Sub-test Structure: Every nutrient/test (protein, carbs, etc.) MUST contain three keys: "result" (Pass/Fail), "claimed", and "tested".
-
-Ordering: The JSON keys MUST appear in the exact order: product_id -> product_info -> basic_tests -> contaminant_tests -> review.
+### OUTPUT TEMPLATE (STRICT ADHERENCE REQUIRED) ###
 {
-  "product_id": "BRANDNAMEPRODUCTNAMEFLAVOR",
-  "product_info": {
-    "product_name": "Example Protein",
-    "product_category": "Whey Concentrate",
-    "serving_size": "1 Scoop (30g)",
-    "verdict": "Pass"
-  },
-  "basic_tests": {
-    "result": "Pass",
-    "protein": { "result": "Pass", "claimed": "24g", "tested": "24.5g" }
-  },
-  "contaminant_tests": {
-    "result": "Pass",
-    "heavy_metals": { "result": "Pass", "status": "Below LOQ" }
-  },
-  "review": {
-    "result": "Pass",
-    "taste": { "result": "Pass", "description": "Good" }
-  }
+  "debug_info": { ... },
+  "product_id": "...",
+  "product_info": { ... },
+  "basic_tests": { ... },
+  "contaminant_tests": { ... },
+  "review": { ... }
 }
-
-        """
-        # ============================================================
-        
-        # Create the complete prompt with URL
-        full_prompt = f"""
-        You are a JSON generator for laboratory analysis reports. Always output valid JSON only, no conversational text or markdown.
-
-        CRITICAL ORDERING REQUIREMENT: You MUST output the JSON keys in this EXACT order:
-        1. debug_info (first)
-        2. product_id (second)
-        3. product_info (third)
-        4. basic_tests (fourth)
-        5. contaminant_tests (fifth)
-        6. review (last)
-
-        FAILURE TO FOLLOW THIS ORDER WILL RESULT IN INVALID OUTPUT.
-
-        JSON STRUCTURE RULES:
-        - debug_info: contains debugging information about URL access and analysis
-        - product_id: (COMPANY + NAME + FLAVOR) in ALL CAPS, no spaces
-        - product_info: contains product_name, product_category, serving_size, verdict
-        - basic_tests: contains result, and sub-tests with claimed/tested values
-        - contaminant_tests: contains result, and contamination test results
-        - review: contains result, and subjective analysis (taste, texture, etc.)
-        - All nested objects must have "result": "Pass"/"Fail" fields where applicable
-        - Use single values only, no ranges
-        - If percentages given for protein/creatine, calculate per_serving values
-
-        DEBUGGING REQUIREMENTS:
-        Include a "debug_info" object as the FIRST field that contains:
-        - can_access_url: true/false - whether you can actually access the video content
-        - url_access_method: "web_search"/"direct_video_access"/"metadata_only"/"none"
-        - video_info_found: object with title, description, and any other metadata you can access
-        - product_identification_method: "video_content_analysis"/"metadata_inference"/"web_search_results"/"assumption"
-        - confidence_level: "high"/"medium"/"low"/"none" - how confident you are in the product identification
-        - reasoning: detailed explanation of how you determined the product
-
-        Task: Analyze the YouTube video at: {video_url} and generate a laboratory analysis report.
-
-        Output Format: You MUST return a valid JSON with the schema following this exact key order and structure:
-
-        product_id: (COMPANY + NAME + FLAVOR) in ALL CAPS, no spaces.
-
-        product_info: {{product_name, product_category, serving_size, verdict}}
-
-        basic_tests: {{result, ...sub-tests}}
-
-        contaminant_tests: {{result, ...sub-tests}}
-
-        review: {{result, ...details}}
-
-        Strict Logic Rules:
-
-        Categories: Only use: Whey Concentrate, Whey Isolate, Whey Blend, Plant protein, Creatine, Food, Omega 3, Others.
-
-        Calculation: If the video only provides percentages for Protein/Creatine, you MUST calculate the per_serving value based on the serving_size.
-
-        No Ranges: Use single values only. If a range is given, provide the average.
-
-        Sub-test Structure: Every nutrient/test (protein, carbs, etc.) MUST contain three keys: "result" (Pass/Fail), "claimed", and "tested".
-
-        Ordering: The JSON keys MUST appear in the exact order: debug_info -> product_id -> product_info -> basic_tests -> contaminant_tests -> review.
-
-        {{
-          "debug_info": {{
-            "can_access_url": false,
-            "url_access_method": "web_search",
-            "video_info_found": {{
-              "title": "Video title from search",
-              "description": "Video description from search"
-            }},
-            "product_identification_method": "metadata_inference",
-            "confidence_level": "low",
-            "reasoning": "Cannot access actual video content, inferred from title/description only"
-          }},
-          "product_id": "BRANDNAMEPRODUCTNAMEFLAVOR",
-          "product_info": {{
-            "product_name": "Example Protein",
-            "product_category": "Whey Concentrate",
-            "serving_size": "1 Scoop (30g)",
-            "verdict": "Pass"
-          }},
-          "basic_tests": {{
-            "result": "Pass",
-            "protein": {{ "result": "Pass", "claimed": "24g", "tested": "24.5g" }}
-          }},
-          "contaminant_tests": {{
-            "result": "Pass",
-            "heavy_metals": {{ "result": "Pass", "status": "Below LOQ" }}
-          }},
-          "review": {{
-            "result": "Pass",
-            "taste": {{ "result": "Pass", "description": "Good" }}
-          }}
-        }}
         """
 
         from google.genai import types
 
-        # 1. Define the config using the proper class
+        # 1. Create Part object for native YouTube video processing
+        print(f"Creating Part object for YouTube URL: {video_url}")
+        video_part = types.Part.from_uri(
+            file_uri=video_url,
+            mime_type='video/mp4'
+        )
+        print(f"Part created successfully: {video_part}")
+
+        # 2. Define the config using the proper class
         gemini_config = types.GenerateContentConfig(
             temperature=0.1,
             tools=[
@@ -286,12 +210,12 @@ Ordering: The JSON keys MUST appear in the exact order: product_id -> product_in
             ]
         )
 
-        # 2. Call the model
-        print("Sending request to Gemini API...")
+        # 3. Call the model with Part object and prompt
+        print("Sending request to Gemini API with video Part...")
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
-                contents=full_prompt,
+                contents=[video_part, prompt],  # Pass video Part AND prompt
                 config=gemini_config
             )
             print("Gemini API call successful")
