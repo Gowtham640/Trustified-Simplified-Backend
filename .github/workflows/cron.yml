@@ -1,0 +1,29 @@
+name: Cron Job
+
+on:
+  schedule:
+    - cron: "*/72 * * * *"   # every 30 minutes
+  workflow_dispatch:         # manual run
+
+jobs:
+  run-cron:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run cron job
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          python cron_job.py
