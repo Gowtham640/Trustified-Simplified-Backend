@@ -2,27 +2,27 @@ name: Cron Job
 
 on:
   schedule:
-    # Run 20 times per day starting at 1:30 PM, every 72 minutes
-    - cron: "30 13 * * *"    # 1:30 PM (start)
-    - cron: "42 14 * * *"    # 2:42 PM (13:30 + 72 min)
-    - cron: "54 15 * * *"    # 3:54 PM (14:42 + 72 min)
-    - cron: "6 17 * * *"     # 5:06 PM (15:54 + 72 min)
-    - cron: "18 18 * * *"    # 6:18 PM (17:06 + 72 min)
-    - cron: "30 19 * * *"    # 7:30 PM (18:18 + 72 min)
-    - cron: "42 20 * * *"    # 8:42 PM (19:30 + 72 min)
-    - cron: "0 22 * * *"     # 10:00 PM (20:42 + 72 min)
-    - cron: "12 23 * * *"    # 11:12 PM (22:00 + 72 min)
-    - cron: "24 0 * * *"     # 12:24 AM (23:12 + 72 min)
-    - cron: "36 1 * * *"     # 1:36 AM (00:24 + 72 min)
-    - cron: "48 2 * * *"     # 2:48 AM (01:36 + 72 min)
-    - cron: "0 4 * * *"      # 4:00 AM (02:48 + 72 min)
-    - cron: "12 5 * * *"     # 5:12 AM (04:00 + 72 min)
-    - cron: "24 6 * * *"     # 6:24 AM (05:12 + 72 min)
-    - cron: "36 7 * * *"     # 7:36 AM (06:24 + 72 min)
-    - cron: "48 8 * * *"     # 8:48 AM (07:36 + 72 min)
-    - cron: "0 10 * * *"     # 10:00 AM (08:48 + 72 min)
-    - cron: "12 11 * * *"    # 11:12 AM (10:00 + 72 min)
-    - cron: "24 12 * * *"    # 12:24 PM (11:12 + 72 min)
+    # Run 20 times per day starting at 1:30 PM IST (8:00 AM UTC), every 72 minutes
+    - cron: "0 8 * * *"      # 8:00 AM UTC = 1:30 PM IST (start)
+    - cron: "12 9 * * *"     # 9:12 AM UTC = 2:42 PM IST (+72 min)
+    - cron: "24 10 * * *"    # 10:24 AM UTC = 3:54 PM IST (+72 min)
+    - cron: "36 11 * * *"    # 11:36 AM UTC = 5:06 PM IST (+72 min)
+    - cron: "48 12 * * *"    # 12:48 PM UTC = 6:18 PM IST (+72 min)
+    - cron: "0 14 * * *"     # 2:00 PM UTC = 7:30 PM IST (+72 min)
+    - cron: "12 15 * * *"    # 3:12 PM UTC = 8:42 PM IST (+72 min)
+    - cron: "24 16 * * *"    # 4:24 PM UTC = 9:54 PM IST (+72 min)
+    - cron: "36 17 * * *"    # 5:36 PM UTC = 11:06 PM IST (+72 min)
+    - cron: "48 18 * * *"    # 6:48 PM UTC = 12:18 AM IST (+72 min)
+    - cron: "0 20 * * *"     # 8:00 PM UTC = 1:30 AM IST (+72 min)
+    - cron: "12 21 * * *"    # 9:12 PM UTC = 2:42 AM IST (+72 min)
+    - cron: "24 22 * * *"    # 10:24 PM UTC = 3:54 AM IST (+72 min)
+    - cron: "36 23 * * *"    # 11:36 PM UTC = 5:06 AM IST (+72 min)
+    - cron: "48 0 * * *"     # 12:48 AM UTC = 6:18 AM IST (+72 min)
+    - cron: "0 2 * * *"      # 2:00 AM UTC = 7:30 AM IST (+72 min)
+    - cron: "12 3 * * *"     # 3:12 AM UTC = 8:42 AM IST (+72 min)
+    - cron: "24 4 * * *"     # 4:24 AM UTC = 9:54 AM IST (+72 min)
+    - cron: "36 5 * * *"     # 5:36 AM UTC = 11:06 AM IST (+72 min)
+    - cron: "48 6 * * *"     # 6:48 AM UTC = 12:18 PM IST (+72 min)
   workflow_dispatch:         # manual run
 
 jobs:
