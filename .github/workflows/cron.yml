@@ -2,7 +2,12 @@ name: Cron Job
 
 on:
   schedule:
-    - cron: "*/72 * * * *"   # every 30 minutes
+    # Run every 72 minutes (approximately) - runs at minutes 0, 12, 24, 36, 48 of each hour
+    - cron: "0 * * * *"    # Every hour at minute 0
+    - cron: "12 * * * *"   # Every hour at minute 12  
+    - cron: "24 * * * *"   # Every hour at minute 24
+    - cron: "36 * * * *"   # Every hour at minute 36
+    - cron: "48 * * * *"   # Every hour at minute 48
   workflow_dispatch:         # manual run
 
 jobs:
@@ -23,7 +28,11 @@ jobs:
 
       - name: Run cron job
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          ANON_KEY: ${{ secrets.ANON_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CUSTOM_SEARCH_API_KEY: ${{ secrets.CUSTOM_SEARCH_API_KEY }}
+          CUSTOM_SEARCH_ENGINE_ID: ${{ secrets.CUSTOM_SEARCH_ENGINE_ID }}
         run: |
           python cron_job.py
