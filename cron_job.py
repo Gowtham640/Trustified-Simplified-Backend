@@ -94,10 +94,10 @@ def process_pending_video():
         # Update status to 'updating'
         def update_video_status():
             return config.supabase.table('videos').update({
-                'status': 'updating',
-                'last_attempt_at': datetime.now(timezone.utc).isoformat(),
-                'retry_count': video.get('retry_count', 0) + 1
-            }).eq('id', video_id).execute()
+            'status': 'updating',
+            'last_attempt_at': datetime.now(timezone.utc).isoformat(),
+            'retry_count': video.get('retry_count', 0) + 1
+        }).eq('id', video_id).execute()
 
         retry_supabase_operation(update_video_status)
         
@@ -125,33 +125,49 @@ def process_pending_video():
                 product_name = product_info.get('product_name', '').strip()
                 product_category = product_info.get('product_category', '').strip()
 
-                # Determine overall verdict from individual test results
-                verdict_value = 'fail'  # Default to fail
-                if basic_tests:
-                    # Check if any test has a result field
-                    test_results = []
-                    for test_key, test_data in basic_tests.items():
-                        if isinstance(test_data, dict) and 'result' in test_data:
-                            result = test_data['result'].strip().lower()
-                            test_results.append(result)
+                # Extract price (can be string or number)
+                price_value = product_info.get('price')
+                if price_value is not None:
+                    # Convert to float if it's a string number, otherwise keep as is
+                    try:
+                        if isinstance(price_value, str):
+                            price_value = float(price_value.replace(',', '').replace('₹', '').replace('Rs', '').strip())
+                        elif not isinstance(price_value, (int, float)):
+                            price_value = None
+                    except (ValueError, AttributeError):
+                        price_value = None
 
-                    # If we have test results, determine overall verdict
-                    if test_results:
-                        # If all results are "passed", then overall verdict is "pass"
-                        if all(result == 'passed' for result in test_results):
-                            verdict_value = 'pass'
+                # Get verdict from product_info (primary source as per user)
+                verdict_value = product_info.get('verdict', '').strip().lower()
+
+                # If no verdict in product_info, try to determine from basic_tests results
+                if not verdict_value:
+                    verdict_value = 'fail'  # Default to fail
+                    if basic_tests:
+                        # Check if any test has a result field
+                        test_results = []
+                        for test_key, test_data in basic_tests.items():
+                            if isinstance(test_data, dict) and 'result' in test_data:
+                                result = test_data['result'].strip().lower()
+                                test_results.append(result)
+
+                        # If we have test results, determine overall verdict
+                        if test_results:
+                            # If all results are "passed", then overall verdict is "pass"
+                            if all(result == 'passed' for result in test_results):
+                                verdict_value = 'pass'
+                            else:
+                                verdict_value = 'fail'
                         else:
-                            verdict_value = 'fail'
-                    else:
-                        # Fallback: check for top-level verdict field
-                        verdict_value = basic_tests.get('verdict', 'fail').strip().lower()
+                            # Fallback: check for top-level verdict field in basic_tests
+                            verdict_value = basic_tests.get('verdict', 'fail').strip().lower()
 
                 # Final validation against allowed values
                 allowed_verdicts = ['pass', 'fail', 'not assigned', 'pending']
                 if verdict_value not in allowed_verdicts:
                     verdict_value = 'fail'  # Default fallback
 
-                # Create unique ID for each product report
+            # Create unique ID for each product report
                 # Generate unique report ID (video_id + product_index to ensure uniqueness)
                 report_id = f"{video_id}_{i}"
 
@@ -160,7 +176,7 @@ def process_pending_video():
                 try:
                     # Insert report with all required fields per updated schema
                     def insert_report():
-                        return config.supabase.table('reports').insert({
+                        insert_data = {
                             'id': report_id,  # Unique report ID (video_id + index)
                             'results': report_json,
                             'image_status': 'pending',
@@ -171,7 +187,11 @@ def process_pending_video():
                             'verdict': verdict_value,  # Now allows: pass, fail, not assigned, pending
                             'company': company_name,
                             'video_id': video_id  # Foreign key to videos table
-                        }).execute()
+                        }
+                        # Add price if available (convert to int for database)
+                        if price_value is not None:
+                            insert_data['price'] = int(price_value)
+                        return config.supabase.table('reports').insert(insert_data).execute()
 
                     result = retry_supabase_operation(insert_report)
                     inserted_report_id = report_id
@@ -203,16 +223,16 @@ def process_pending_video():
                         print(f"Failed to fetch product image for {product_id_value or product_name}")
                 except Exception as update_error:
                     print(f"Error updating image status for {product_id_value or product_name}: {update_error}")
-
+        
         # Update video status to 'completed'
         def update_video_completed():
             return config.supabase.table('videos').update({
-                'status': 'completed'
-            }).eq('id', video_id).execute()
-
+            'status': 'completed'
+        }).eq('id', video_id).execute()
+        
         retry_supabase_operation(update_video_completed)
         print(f"Successfully processed video: {video_url}")
-
+        
     except Exception as e:
         print(f"Error processing video: {e}")
         try:
@@ -220,8 +240,8 @@ def process_pending_video():
             if 'video_id' in locals():
                 def update_video_failed():
                     return config.supabase.table('videos').update({
-                        'status': 'failed'
-                    }).eq('id', video_id).execute()
+                    'status': 'failed'
+                }).eq('id', video_id).execute()
                 retry_supabase_operation(update_video_failed)
         except Exception as failure_error:
             print(f"Failed to update video status to failed: {failure_error}")
@@ -247,7 +267,7 @@ def generate_report_with_gemini(video_url):
 
         # Create the analysis prompt that forces video content analysis
         prompt = """
-        ### SYSTEM ROLE ###
+### SYSTEM ROLE ###
 You are a specialized JSON generator for laboratory analysis. You must perform a visual analysis of the provided video content. If you cannot access the video directly to see specific lab equipment, technician gear, and product texture, you must set "can_access_url": false.
 
 ### INSTRUCTIONS ###
@@ -265,17 +285,21 @@ You MUST output valid JSON. The keys MUST appear in this exact order:
 6. "review"
 
 ### DATA RULES ###
+- For reference: basic_tests, review and contaminant_tests are parent tests, and the subtests are the tests inside them.
 - Product ID: [COMPANY][NAME][FLAVOR] (ALL CAPS, NO SPACES).
 - Categories: Whey Concentrate, Whey Isolate, Whey Blend, Plant protein, Creatine, Food, Omega 3, Others.
 - No ranges: Provide single average values.
-- Sub-tests: Must include "verdict", "claimed", and "tested".
+- Tests: Parent tests and sub tests both must include "verdict", "claimed", and "tested".
 - CRUCIAL FIELDS: Always include "company_name", "product_name", "product_category", "verdict" , "price" , "price_per_serving", "serving_size" in product_info.
 - PROTEIN/CREATINE: If product is whey/creatine, include "protein_per_serving"/"creatine_per_serving" in basic_tests.
-- Note: Only tests must include a note explaining the result of the test and not sub tests.
-- Verdict: Every test and subtest must have a "verdict" field(pass/fail/NULL).
+- Note: Every test must have a short note explaining the results of all the subtests.
+- parent tests: Every parent test MUST have a "verdict" field(pass/fail/NULL).
+- children tests: Every child test MUST have a "verdict" field(pass/fail/NULL).
 - NULL: If any field doesnt have the information then mark it "NULL".
 - Claimed: Only basic_tests subtests must have claimed field. Contaminant and review tests must not have claimed field.
 - Review: Must include "taste","mixability","packaging","serving_size_accuracy". 
+- Price: If prices arent mentioned in the video then get the price of the products and include it.
+- Rule: Any descriptive matter MUST ONLY come under "note" field. 
 
 ### INPUT VIDEO ###
 """ + video_url + """
@@ -508,50 +532,193 @@ def fetch_product_image(report_json):
     Returns the URL of the full-sized image
     """
     try:
-        # Extract product name for search query (from product_info section)
-        product_name = report_json.get('product_info', {}).get('product_name', '')
+        # Extract product details for search query
+        product_info = report_json.get('product_info', {})
+        company_name = product_info.get('company_name', '').strip()
+        product_name = product_info.get('product_name', '').strip()
 
-        # Construct search query (no brand field in current structure)
-        search_query = product_name.strip()
-        
-        if not search_query:
-            print("No product name found in report")
-            return None
-        
-        # Make Custom Search API request
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {
-            'key': config.CUSTOM_SEARCH_API_KEY,
-            'cx': config.CUSTOM_SEARCH_ENGINE_ID,
-            'q': search_query,
-            'searchType': 'image',
-            'num': 1
-        }
-        
-        response = requests.get(url, params=params)
-        print(f"Custom Search API response status: {response.status_code}")
-
-        if response.status_code == 400:
-            print(f"Bad Request details: {response.text}")
-            print("This usually means invalid API key or search engine ID")
-            print("SOLUTION: Go to Google Cloud Console and check/renew your API keys")
-            return None
-        elif response.status_code == 403:
-            print(f"Forbidden - likely API key expired or quota exceeded: {response.text}")
-            print("SOLUTION: Check API key validity and billing status in Google Cloud Console")
-            return None
-
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        # Extract image URL from 'link' field in 'items'
-        if 'items' in data and len(data['items']) > 0:
-            image_url = data['items'][0]['link']
-            return image_url
+        # Try to extract flavor from various possible fields
+        flavor = ''
+        # Check product_info for flavor field
+        if 'flavor' in product_info and product_info['flavor']:
+            flavor = product_info['flavor'].strip()
+        elif 'flavour' in product_info and product_info['flavour']:
+            flavor = product_info['flavour'].strip()
+        # Check if flavor is mentioned in product_name or product_id
+        elif 'flavor' in product_name.lower() or 'flavour' in product_name.lower():
+            # Flavor might already be in product_name, don't add extra
+            pass
         else:
-            print("No image results found")
+            # Try to extract from product_id (last part after removing company/product)
+            product_id = report_json.get('product_id', '')
+            if product_id and len(product_id) > len(company_name.upper().replace(' ', '')):
+                # Remove company name part and see if there's flavor info
+                remaining = product_id[len(company_name.upper().replace(' ', '')):]
+                if remaining and remaining != product_name.upper().replace(' ', ''):
+                    flavor = remaining
+
+        # Construct search query: company_name + product_name + flavor (if not unflavored)
+        search_parts = []
+        if company_name:
+            search_parts.append(company_name)
+        if product_name:
+            search_parts.append(product_name)
+        if flavor and flavor.lower() not in ['unflavored', 'unflavoured', 'plain', 'natural']:
+            search_parts.append(flavor)
+
+        search_query = ' '.join(search_parts).strip()
+
+        # Fallback to just product_name if no company
+        if not search_query and product_name:
+            search_query = product_name
+
+        if not search_query:
+            print("❌ No product name found in report")
             return None
+
+        # Clean up search query - remove concatenated words that might be IDs
+        # If the search query looks like an all-caps concatenated string, try to break it up
+        if search_query.isupper() and len(search_query) > 20 and '_' not in search_query:
+            # Try to split on common patterns
+            alternative_queries = []
+
+            # Try just the product name part
+            if product_name and len(product_name) < len(search_query):
+                alternative_queries.append(product_name)
+
+            # Try company + product if they're separate
+            if company_name and product_name and company_name != product_name:
+                alternative_queries.append(f"{company_name} {product_name}")
+
+            # Try to break up concatenated words (basic heuristic)
+            if len(search_query) > 30:
+                # Look for transitions from lowercase to uppercase (start of new word)
+                words = []
+                current_word = ""
+                for i, char in enumerate(search_query):
+                    if i > 0 and char.isupper() and search_query[i-1].islower():
+                        if current_word:
+                            words.append(current_word)
+                        current_word = char
+                    else:
+                        current_word += char
+                if current_word:
+                    words.append(current_word)
+
+                if len(words) > 1:
+                    readable_query = ' '.join(words)
+                    alternative_queries.append(readable_query)
+                    print(f"💡 Detected concatenated text, trying readable version: '{readable_query}'")
+
+            # Use first alternative if available
+            if alternative_queries:
+                search_query = alternative_queries[0]
+                print(f"🔄 Using alternative search query: '{search_query}'")
+
+        # Try multiple search queries if the first one fails
+        search_queries_to_try = [search_query]
+
+        # Add fallbacks
+        if product_name:
+            search_queries_to_try.append(product_name)
+        if company_name and product_name and f"{company_name} {product_name}" != search_query:
+            search_queries_to_try.append(f"{company_name} {product_name}")
+        if company_name:
+            search_queries_to_try.append(company_name)
+
+        # Remove duplicates while preserving order
+        search_queries_to_try = list(dict.fromkeys(search_queries_to_try))
+
+        print(f"🎯 Will try {len(search_queries_to_try)} search queries: {search_queries_to_try}")
+
+        # Try each search query until we find an image
+        for attempt, current_query in enumerate(search_queries_to_try, 1):
+            if attempt > 1:
+                print(f"🔄 Trying fallback query {attempt}/{len(search_queries_to_try)}: '{current_query}'")
+
+            # Make Custom Search API request (get more results to filter social media)
+            url = "https://www.googleapis.com/customsearch/v1"
+            params = {
+                'key': config.CUSTOM_SEARCH_API_KEY,
+                'cx': config.CUSTOM_SEARCH_ENGINE_ID,
+                'q': current_query,
+                'searchType': 'image',
+                'num': 10  # Get 10 results to have alternatives after filtering
+            }
+
+            print(f"🔍 Image search query: '{current_query}'")
+            print(f"📊 Product info: company='{company_name}', product='{product_name}', flavor='{flavor}'")
+
+            response = requests.get(url, params=params)
+            print(f"🌐 Custom Search API response status: {response.status_code}")
+
+            if response.status_code == 400:
+                print(f"❌ Bad Request details: {response.text}")
+                print("This usually means invalid API key or search engine ID")
+                print("SOLUTION: Go to Google Cloud Console and check/renew your API keys")
+                continue  # Try next query
+            elif response.status_code == 403:
+                print(f"🚫 Forbidden - likely API key expired or quota exceeded: {response.text}")
+                print("SOLUTION: Check API key validity and billing status in Google Cloud Console")
+                continue  # Try next query
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            # Debug: Print response structure
+            print(f"📋 API Response keys: {list(data.keys()) if data else 'None'}")
+            if 'items' in data:
+                print(f"🖼️  Total image results returned: {len(data['items'])}")
+            else:
+                print("⚠️  No 'items' key in response")
+
+            # Debug: Print first few results if available
+            if 'items' in data and len(data['items']) > 0:
+                print("🔍 First 3 raw results:")
+                for i, item in enumerate(data['items'][:3]):
+                    title = item.get('title', 'N/A')
+                    link = item.get('link', 'N/A')
+                    print(f"   {i+1}. Title: '{title[:50]}...' | URL: {link[:60]}...")
+
+            # Filter out social media images (Facebook, Instagram, YouTube, etc.)
+            social_domains = [
+                'facebook.com', 'instagram.com', 'fbcdn.net', 'instagram.net',
+                'facebook.net', 'fb.com', 'tiktok.com', 'twitter.com', 'x.com',
+                'youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com'
+            ]
+
+            filtered_count = 0
+            social_count = 0
+
+            if 'items' in data and len(data['items']) > 0:
+                for item in data['items']:
+                    image_url = item.get('link', '')
+                    if image_url:
+                        # Check if URL contains social media domains
+                        is_social_media = any(domain in image_url.lower() for domain in social_domains)
+                        if not is_social_media:
+                            print(f"✅ Selected filtered image: {image_url}")
+                            return image_url
+                        else:
+                            social_count += 1
+                            print(f"🚫 Skipped social media image: {image_url}")
+
+                print(f"📊 Filtering summary: {len(data['items'])} total, {social_count} social media, {filtered_count} valid")
+                print(f"⚠️  All {len(data['items'])} image results were from social media platforms")
+                # Continue to next query instead of returning None immediately
+            else:
+                print(f"❌ No image results found for query '{current_query}'")
+                # Debug: Print the full response if it's small
+                if data and len(str(data)) < 1000:
+                    print(f"🔍 Full API response: {data}")
+                else:
+                    print("🔍 Response too large to display")
+                # Continue to next query
+
+        # If we get here, all queries failed
+        print(f"💔 All {len(search_queries_to_try)} search queries failed to find suitable images")
+        return None
             
     except Exception as e:
         print(f"Error fetching product image: {e}")
@@ -646,12 +813,12 @@ def check_new_videos():
                 try:
                     def insert_video():
                         return config.supabase.table('videos').insert({
-                            'video_id': video['video_id'],
-                            'video_url': video['video_url'],
-                            'channel_id': video['channel_id'],
-                            'published_at': video['published_at'],
-                            'status': 'pending'
-                        }).execute()
+                        'video_id': video['video_id'],
+                        'video_url': video['video_url'],
+                        'channel_id': video['channel_id'],
+                        'published_at': video['published_at'],
+                        'status': 'pending'
+                    }).execute()
                     retry_supabase_operation(insert_video)
                     print(f"Added new video: {video['video_url']}")
                 except Exception as e:
@@ -681,7 +848,7 @@ def main():
     elif current_usage >= 15:
         emoji = "🟡"
     print(f"{emoji} CURRENT GEMINI USAGE: {current_usage}/20 {emoji}")
-
+    
     # Part 1: Process pending videos
     process_pending_video()
     
