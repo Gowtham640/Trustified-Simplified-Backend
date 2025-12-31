@@ -2,12 +2,27 @@ name: Cron Job
 
 on:
   schedule:
-    # Run every 72 minutes (approximately) - runs at minutes 0, 12, 24, 36, 48 of each hour
-    - cron: "0 * * * *"    # Every hour at minute 0
-    - cron: "12 * * * *"   # Every hour at minute 12  
-    - cron: "24 * * * *"   # Every hour at minute 24
-    - cron: "36 * * * *"   # Every hour at minute 36
-    - cron: "48 * * * *"   # Every hour at minute 48
+    # Run 20 times per day starting at 1:30 PM, every 72 minutes
+    - cron: "30 13 * * *"    # 1:30 PM (start)
+    - cron: "42 14 * * *"    # 2:42 PM (13:30 + 72 min)
+    - cron: "54 15 * * *"    # 3:54 PM (14:42 + 72 min)
+    - cron: "6 17 * * *"     # 5:06 PM (15:54 + 72 min)
+    - cron: "18 18 * * *"    # 6:18 PM (17:06 + 72 min)
+    - cron: "30 19 * * *"    # 7:30 PM (18:18 + 72 min)
+    - cron: "42 20 * * *"    # 8:42 PM (19:30 + 72 min)
+    - cron: "0 22 * * *"     # 10:00 PM (20:42 + 72 min)
+    - cron: "12 23 * * *"    # 11:12 PM (22:00 + 72 min)
+    - cron: "24 0 * * *"     # 12:24 AM (23:12 + 72 min)
+    - cron: "36 1 * * *"     # 1:36 AM (00:24 + 72 min)
+    - cron: "48 2 * * *"     # 2:48 AM (01:36 + 72 min)
+    - cron: "0 4 * * *"      # 4:00 AM (02:48 + 72 min)
+    - cron: "12 5 * * *"     # 5:12 AM (04:00 + 72 min)
+    - cron: "24 6 * * *"     # 6:24 AM (05:12 + 72 min)
+    - cron: "36 7 * * *"     # 7:36 AM (06:24 + 72 min)
+    - cron: "48 8 * * *"     # 8:48 AM (07:36 + 72 min)
+    - cron: "0 10 * * *"     # 10:00 AM (08:48 + 72 min)
+    - cron: "12 11 * * *"    # 11:12 AM (10:00 + 72 min)
+    - cron: "24 12 * * *"    # 12:24 PM (11:12 + 72 min)
   workflow_dispatch:         # manual run
 
 jobs:
