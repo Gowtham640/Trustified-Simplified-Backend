@@ -286,7 +286,7 @@ You MUST output valid JSON. The keys MUST appear in this exact order:
 
 ### DATA RULES ###
 - For reference: basic_tests, review and contaminant_tests are parent tests, and the subtests are the tests inside them.
-- Product ID: [COMPANY][NAME][FLAVOR] (ALL CAPS, NO SPACES).
+- Product ID: [COMPANY][NAME][FLAVOR] (ALL CAPS, NO SPACES, NO SPECIAL CHARACTERS).
 - Categories: Whey Concentrate, Whey Isolate, Whey Blend, Plant protein, Creatine, Food, Omega 3, Others.
 - No ranges: Provide single average values.
 - Tests: Parent tests and sub tests both must include "verdict", "claimed", and "tested".
